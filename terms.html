@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Plant Bio-Rhythm HUD</title>
+
+  <!-- Font -->
+  <link href="https://fonts.googleapis.com/css2?family=Azeret+Mono:wght@400;700&display=swap" rel="stylesheet" />
+  <!-- TensorFlow.js + MobileNet -->
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.13.0"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/mobilenet@2.1.0"></script>
+
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      overflow: hidden;
+      font-family: 'Azeret Mono', monospace;
+      color: #00ffff;
+      background: black;
+    }
+
+    video, canvas {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      z-index: 0;
+      filter: brightness(0.5) blur(2px);
+    }
+
+    .hud-container {
+      position: absolute;
+      top: 45%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: 320px;
+      height: 260px;
+      border: 2px solid rgba(0, 255, 255, 1);
+      background: rgba(0, 255, 255, 0.08);
+      box-shadow: 0 0 30px rgba(0, 255, 255, 0.5);
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      z-index: 2;
+      backdrop-filter: blur(5px);
+    }
+
+    .hud-header {
+      text-align: center;
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: 2px;
+      color: #00ffff;
+      margin-bottom: 8px;
+    }
+
+    .symbol-grid-container {
+      overflow: hidden;
+      height: 144px;
+      position: relative;
+    }
+
+    .symbol-grid {
+      display: grid;
+      grid-template-columns: repeat(8, 1fr);
+      grid-auto-rows: 18px;
+      font-size: 14px;
+      text-align: center;
+      color: #00ffff;
+      animation: scrollLoop 15s linear infinite;
+    }
+
+    @keyframes scrollLoop {
+      0% { transform: translateY(0); }
+      100% { transform: translateY(-50%); }
+    }
+
+    .sync-button {
+      margin-top: 10px;
+      background: none;
+      border: 1px solid #00ffff;
+      padding: 8px;
+      color: #00ffff;
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      cursor: pointer;
+      letter-spacing: 1px;
+      transition: background 0.3s;
+    }
+
+    .sync-button:hover {
+      background-color: rgba(0, 255, 255, 0.2);
+    }
+
+    .terminal-log {
+      position: absolute;
+      top: 82%;
+      left: 50%;
+      transform: translateX(-50%);
+      color: #00ffff;
+      font-size: 0.75rem;
+      letter-spacing: 1px;
+      font-family: 'Azeret Mono', monospace;
+      text-align: center;
+      z-index: 3;
+      background-color: rgba(0, 255, 255, 0.05);
+      padding: 6px 12px;
+      border: 1px solid #00ffff;
+      box-shadow: 0 0 10px rgba(0, 255, 255, 0.3);
+      display: none;
+    }
+  </style>
+</head>
+<body>
+
+  <video id="cameraFeed" autoplay muted playsinline></video>
+  <canvas id="overlay"></canvas>
+
+  <div class="hud-container">
+    <div class="hud-header">Bio-Rhythm Analysis</div>
+    <div class="symbol-grid-container">
+      <div class="symbol-grid" id="symbolGrid"></div>
+    </div>
+    <button class="sync-button" onclick="manualDetection()">Manual Sync</button>
+  </div>
+
+  <div class="terminal-log" id="logMessage">Plant detected – syncing...</div>
+
+  <script>
+    const video = document.getElementById("cameraFeed");
+    const canvas = document.getElementById("overlay");
+    const ctx = canvas.getContext("2d");
+    const log = document.getElementById("logMessage");
+    const backgroundColors = ['hsl(0, 100%, 60%)', 'hsl(60, 100%, 60%)', 'hsl(120, 100%, 50%)'];
+
+    const symbols = ['🌿', '💧', '░', '▒', '▓', '⚛', '♒', '🔆', '0', '1', '⬛', '⨀', '⧖', '⟁', '☘', '♁'];
+    let model;
+
+    function generateSymbolGrid() {
+      const grid = document.getElementById("symbolGrid");
+      let html = '';
+      for (let i = 0; i < 128; i++) {
+        const rand = symbols[Math.floor(Math.random() * symbols.length)];
+        html += `<div>${rand}</div>`;
+      }
+      grid.innerHTML = html;
+    }
+
+    function playBeep() {
+      const context = new (window.AudioContext || window.webkitAudioContext)();
+      const oscillator = context.createOscillator();
+      const gainNode = context.createGain();
+
+      oscillator.type = 'square';
+      oscillator.frequency.setValueAtTime(950, context.currentTime);
+      oscillator.connect(gainNode);
+      gainNode.connect(context.destination);
+
+      oscillator.start();
+      gainNode.gain.exponentialRampToValueAtTime(0.00001, context.currentTime + 0.4);
+      oscillator.stop(context.currentTime + 0.4);
+    }
+
+    function showLog(msg) {
+      log.textContent = msg;
+      log.style.display = 'block';
+      setTimeout(() => {
+        log.style.display = 'none';
+      }, 3000);
+    }
+
+    async function runDetection() {
+      const predictions = await model.classify(video);
+      const foundPlant = predictions.find(p =>
+        p.className.toLowerCase().includes("plant") ||
+        p.className.toLowerCase().includes("tree") ||
+        p.className.toLowerCase().includes("flower")
+      );
+
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      if (foundPlant && foundPlant.probability > 0.4) {
+        const randomColor = backgroundColors[Math.floor(Math.random() * backgroundColors.length)];
+        ctx.strokeStyle = randomColor;
+        ctx.lineWidth = 8;
+        ctx.globalAlpha = 1.0;
+        ctx.strokeRect(canvas.width / 4, canvas.height / 4, canvas.width / 2, canvas.height / 2);
+
+        document.body.style.backgroundColor = randomColor;
+        generateSymbolGrid();
+        playBeep();
+        showLog("Plant detected – syncing...");
+      }
+    }
+
+    function detectLoop() {
+      setInterval(runDetection, 2000);
+    }
+
+    function manualDetection() {
+      runDetection();
+    }
+
+    async function setupCameraAndModel() {
+      const constraints = {
+        audio: false,
+        video: {
+          facingMode: { exact: "environment" }
+        }
+      };
+
+      let stream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia(constraints);
+      } catch (error) {
+        stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      }
+
+      video.srcObject = stream;
+      await new Promise(resolve => video.onloadedmetadata = resolve);
+
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+
+      model = await mobilenet.load();
+      detectLoop();
+    }
+
+    // On user tap, setup camera + model (iOS autoplay restriction workaround)
+    document.addEventListener('DOMContentLoaded', () => {
+      document.body.addEventListener('click', () => {
+        setupCameraAndModel();
+        generateSymbolGrid();
+      }, { once: true });
+    });
+  </script>
+</body>
+</html>
